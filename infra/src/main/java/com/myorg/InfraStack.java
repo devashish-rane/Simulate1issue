@@ -15,6 +15,7 @@ import software.amazon.awscdk.services.apigateway.CfnResource;
 import software.amazon.awscdk.services.apigateway.CfnRestApi;
 import software.amazon.awscdk.services.apigateway.CfnStage;
 import software.amazon.awscdk.services.apigatewayv2.VpcLink;
+import software.amazon.awscdk.services.applicationsignals.CfnDiscovery;
 import software.amazon.awscdk.services.cloudwatch.Dashboard;
 import software.amazon.awscdk.services.cloudwatch.GraphWidget;
 import software.amazon.awscdk.services.cloudwatch.MathExpression;
@@ -58,7 +59,7 @@ public class InfraStack extends Stack {
 
     // Smallest valid Fargate task size. AWS does not allow lower than 256 CPU / 512 MiB.
     private static final int APP_CPU_UNITS = 256;
-    private static final int APP_MEMORY_MIB = 512;
+    private static final int APP_MEMORY_MIB = 1024;
 
     // Single running task is enough for the current one-controller service.
     // During deployments, ECS may briefly run a replacement task to avoid downtime.
@@ -67,8 +68,8 @@ public class InfraStack extends Stack {
     // Spring Boot plus the tracing javaagent can take longer to become ALB-healthy on a tiny task.
     private static final int HEALTH_CHECK_GRACE_SECONDS = 240;
 
-    private static final String ADOT_COLLECTOR_IMAGE =
-            "public.ecr.aws/aws-observability/aws-otel-collector:v0.47.0";
+    private static final String CLOUDWATCH_AGENT_IMAGE =
+            "public.ecr.aws/cloudwatch-agent/cloudwatch-agent:latest";
     private static final String REST_API_NAME = "prod-core-rest-api";
     private static final String REST_API_STAGE = "prod";
 
@@ -92,6 +93,10 @@ public class InfraStack extends Stack {
 
         Cluster cluster = Cluster.Builder.create(this, "Cluster")
                 .vpc(vpc)
+                .build();
+
+        // Enables CloudWatch Application Signals account discovery and its service-linked role.
+        CfnDiscovery.Builder.create(this, "ApplicationSignalsDiscovery")
                 .build();
 
         // Keep logs cheap for this learning stack, and delete them on cdk destroy.
@@ -133,7 +138,7 @@ public class InfraStack extends Stack {
                                 .platform(Platform.LINUX_ARM64)
                                 .build()))
                         .containerPort(CONTAINER_PORT)
-                        .environment(appTracingEnvironment())
+                        .environment(appTracingEnvironment(serviceLogGroup.getLogGroupName()))
                         .logDriver(LogDrivers.awsLogs(AwsLogDriverProps.builder()
                                 .logGroup(serviceLogGroup)
                                 .streamPrefix("service")
@@ -141,22 +146,25 @@ public class InfraStack extends Stack {
                         .build())
                 .build();
 
-        // ADOT collector sidecar receives OTLP traces from the Java agent and exports them to X-Ray.
-        ContainerDefinition adotCollector = service.getTaskDefinition().addContainer("AdotCollector",
+        service.getTaskDefinition().getTaskRole().addManagedPolicy(
+                ManagedPolicy.fromAwsManagedPolicyName("CloudWatchAgentServerPolicy"));
+
+        // Application Signals sidecar receives telemetry from the Java agent and publishes it to CloudWatch/X-Ray.
+        ContainerDefinition cloudWatchAgent = service.getTaskDefinition().addContainer("CloudWatchAgent",
                 ContainerDefinitionOptions.builder()
-                        .containerName("adot-collector")
-                        .image(ContainerImage.fromRegistry(ADOT_COLLECTOR_IMAGE))
-                        .essential(false)
-                        .memoryReservationMiB(64)
-                        .environment(Map.of("AOT_CONFIG_CONTENT", adotCollectorConfig()))
+                        .containerName("ecs-cwagent")
+                        .image(ContainerImage.fromRegistry(CLOUDWATCH_AGENT_IMAGE))
+                        .essential(true)
+                        .memoryReservationMiB(128)
+                        .environment(Map.of("CW_CONFIG_CONTENT", cloudWatchAgentConfig()))
                         .logging(LogDrivers.awsLogs(AwsLogDriverProps.builder()
                                 .logGroup(serviceLogGroup)
-                                .streamPrefix("adot")
+                                .streamPrefix("cloudwatch-agent")
                                 .build()))
                         .build());
 
         service.getTaskDefinition().getDefaultContainer().addContainerDependencies(ContainerDependency.builder()
-                .container(adotCollector)
+                .container(cloudWatchAgent)
                 .condition(ContainerDependencyCondition.START)
                 .build());
 
@@ -444,40 +452,39 @@ public class InfraStack extends Stack {
                 .build();
     }
 
-    private static Map<String, String> appTracingEnvironment() {
+    private static Map<String, String> appTracingEnvironment(String serviceLogGroupName) {
         return Map.ofEntries(
                 Map.entry("JAVA_TOOL_OPTIONS", "-javaagent:/opt/aws-opentelemetry-agent.jar"),
                 Map.entry("OTEL_SERVICE_NAME", "prod-core-service"),
-                Map.entry("OTEL_RESOURCE_ATTRIBUTES", "service.namespace=prod-core,deployment.environment.name=learning"),
+                Map.entry("OTEL_RESOURCE_ATTRIBUTES", "service.name=prod-core-service,"
+                        + "service.namespace=prod-core,"
+                        + "deployment.environment=learning,"
+                        + "aws.log.group.names=" + serviceLogGroupName),
+                Map.entry("OTEL_AWS_APPLICATION_SIGNALS_ENABLED", "true"),
                 Map.entry("OTEL_TRACES_EXPORTER", "otlp"),
                 Map.entry("OTEL_METRICS_EXPORTER", "none"),
                 Map.entry("OTEL_LOGS_EXPORTER", "none"),
-                Map.entry("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4317"),
-                Map.entry("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
-                Map.entry("OTEL_PROPAGATORS", "xray,tracecontext,baggage"),
-                Map.entry("OTEL_TRACES_SAMPLER", "parentbased_traceidratio"),
-                Map.entry("OTEL_TRACES_SAMPLER_ARG", "1.0"));
+                Map.entry("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"),
+                Map.entry("OTEL_AWS_APPLICATION_SIGNALS_EXPORTER_ENDPOINT", "http://localhost:4316/v1/metrics"),
+                Map.entry("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://localhost:4316/v1/traces"),
+                Map.entry("OTEL_PROPAGATORS", "tracecontext,baggage,b3,xray"),
+                Map.entry("OTEL_TRACES_SAMPLER", "xray"));
     }
 
-    private static String adotCollectorConfig() {
+    private static String cloudWatchAgentConfig() {
         return String.join("\n", List.of(
-                "receivers:",
-                "  otlp:",
-                "    protocols:",
-                "      grpc:",
-                "        endpoint: 0.0.0.0:4317",
-                "      http:",
-                "        endpoint: 0.0.0.0:4318",
-                "processors:",
-                "  batch/traces:",
-                "exporters:",
-                "  awsxray:",
-                "service:",
-                "  pipelines:",
-                "    traces:",
-                "      receivers: [otlp]",
-                "      processors: [batch/traces]",
-                "      exporters: [awsxray]"));
+                "{",
+                "  \"traces\": {",
+                "    \"traces_collected\": {",
+                "      \"application_signals\": {}",
+                "    }",
+                "  },",
+                "  \"logs\": {",
+                "    \"metrics_collected\": {",
+                "      \"application_signals\": {}",
+                "    }",
+                "  }",
+                "}"));
     }
 
     private String restApiUrl(CfnRestApi restApi) {
