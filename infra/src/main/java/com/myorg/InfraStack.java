@@ -8,21 +8,12 @@ import software.amazon.awscdk.Duration;
 import software.amazon.awscdk.RemovalPolicy;
 import software.amazon.awscdk.Stack;
 import software.amazon.awscdk.StackProps;
-import software.amazon.awscdk.services.apigateway.AccessLogFormat;
 import software.amazon.awscdk.services.apigateway.CfnAccount;
 import software.amazon.awscdk.services.apigateway.CfnDeployment;
 import software.amazon.awscdk.services.apigateway.CfnMethod;
 import software.amazon.awscdk.services.apigateway.CfnResource;
 import software.amazon.awscdk.services.apigateway.CfnRestApi;
 import software.amazon.awscdk.services.apigateway.CfnStage;
-import software.amazon.awscdk.aws_apigatewayv2_integrations.HttpAlbIntegration;
-import software.amazon.awscdk.services.apigatewayv2.HttpApi;
-import software.amazon.awscdk.services.apigatewayv2.HttpMethod;
-import software.amazon.awscdk.services.apigatewayv2.HttpStageOptions;
-import software.amazon.awscdk.services.apigatewayv2.IAccessLogDestination;
-import software.amazon.awscdk.services.apigatewayv2.IAccessLogSettings;
-import software.amazon.awscdk.services.apigatewayv2.IHttpStage;
-import software.amazon.awscdk.services.apigatewayv2.LogGroupLogDestination;
 import software.amazon.awscdk.services.apigatewayv2.VpcLink;
 import software.amazon.awscdk.services.cloudwatch.Dashboard;
 import software.amazon.awscdk.services.cloudwatch.GraphWidget;
@@ -109,12 +100,6 @@ public class InfraStack extends Stack {
                 .removalPolicy(RemovalPolicy.DESTROY)
                 .build();
 
-        LogGroup apiAccessLogGroup = LogGroup.Builder.create(this, "ApiAccessLogGroup")
-                .logGroupName("/aws/apigateway/prod-core-api/access")
-                .retention(RetentionDays.ONE_DAY)
-                .removalPolicy(RemovalPolicy.DESTROY)
-                .build();
-
         LogGroup restApiAccessLogGroup = LogGroup.Builder.create(this, "RestApiAccessLogGroup")
                 .logGroupName("/aws/apigateway/prod-core-rest-api/access")
                 .retention(RetentionDays.ONE_DAY)
@@ -195,7 +180,7 @@ public class InfraStack extends Stack {
                 .unhealthyThresholdCount(3)
                 .build());
 
-        // API Gateway HTTP API reaches private VPC resources through this VPC Link.
+        // API Gateway reaches private VPC resources through this VPC Link.
         SecurityGroup vpcLinkSecurityGroup = SecurityGroup.Builder.create(this, "VpcLinkSecurityGroup")
                 .vpc(vpc)
                 .description("API Gateway VPC Link security group")
@@ -213,28 +198,6 @@ public class InfraStack extends Stack {
                 .subnets(privateSubnets)
                 .securityGroups(List.of(vpcLinkSecurityGroup))
                 .build();
-
-        // Default proxy route: API Gateway -> VPC Link -> ALB listener -> ECS task.
-        HttpAlbIntegration albIntegration = HttpAlbIntegration.Builder
-                .create("AlbIntegration", service.getListener())
-                .vpcLink(vpcLink)
-                .method(HttpMethod.ANY)
-                .timeout(Duration.seconds(29))
-                .build();
-
-        HttpApi api = HttpApi.Builder.create(this, "Api")
-                .apiName("prod-core-api")
-                .defaultIntegration(albIntegration)
-                .createDefaultStage(false)
-                .build();
-
-        // Structured API Gateway access logs are the first place to check edge-level failures.
-        // Keep the format metadata-only: do not log request bodies, auth tokens, or query strings.
-        IHttpStage apiStage = api.addStage("DefaultStage", HttpStageOptions.builder()
-                .stageName("$default")
-                .autoDeploy(true)
-                .accessLogSettings(apiAccessLogSettings(apiAccessLogGroup))
-                .build());
 
         Role apiGatewayCloudWatchRole = Role.Builder.create(this, "ApiGatewayCloudWatchRole")
                 .assumedBy(new ServicePrincipal("apigateway.amazonaws.com"))
@@ -452,16 +415,6 @@ public class InfraStack extends Stack {
                 .value(restApiUrl(restApi))
                 .build();
 
-        CfnOutput.Builder.create(this, "HttpApiUrl")
-                .description("Legacy HTTP API Gateway URL kept during REST migration")
-                .value(apiStage.getUrl())
-                .build();
-
-        CfnOutput.Builder.create(this, "ApiAccessLogGroupName")
-                .description("HTTP API Gateway access log group")
-                .value(apiAccessLogGroup.getLogGroupName())
-                .build();
-
         CfnOutput.Builder.create(this, "RestApiAccessLogGroupName")
                 .description("REST API Gateway access log group")
                 .value(restApiAccessLogGroup.getLogGroupName())
@@ -579,41 +532,6 @@ public class InfraStack extends Stack {
                         "method.request.path.proxy"))
                 .timeoutInMillis(29_000)
                 .build();
-    }
-
-    private static IAccessLogSettings apiAccessLogSettings(LogGroup logGroup) {
-        return new IAccessLogSettings() {
-            @Override
-            public IAccessLogDestination getDestination() {
-                return new LogGroupLogDestination(logGroup);
-            }
-
-            @Override
-            public AccessLogFormat getFormat() {
-                return AccessLogFormat.custom(apiAccessLogFormat());
-            }
-        };
-    }
-
-    private static String apiAccessLogFormat() {
-        return "{"
-                + "\"requestId\":\"$context.requestId\","
-                + "\"apiId\":\"$context.apiId\","
-                + "\"stage\":\"$context.stage\","
-                + "\"routeKey\":\"$context.routeKey\","
-                + "\"httpMethod\":\"$context.httpMethod\","
-                + "\"path\":\"$context.path\","
-                + "\"status\":\"$context.status\","
-                + "\"protocol\":\"$context.protocol\","
-                + "\"responseLatency\":\"$context.responseLatency\","
-                + "\"responseLength\":\"$context.responseLength\","
-                + "\"integrationStatus\":\"$context.integrationStatus\","
-                + "\"integrationLatency\":\"$context.integrationLatency\","
-                + "\"integrationError\":\"$context.integrationErrorMessage\","
-                + "\"errorMessage\":\"$context.error.message\","
-                + "\"sourceIp\":\"$context.identity.sourceIp\","
-                + "\"userAgent\":\"$context.identity.userAgent\""
-                + "}";
     }
 
     private static String restApiAccessLogFormat() {
