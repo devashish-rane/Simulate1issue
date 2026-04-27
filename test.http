@@ -1,0 +1,14 @@
+# POST http://localhost:8080/api/start-scan
+
+
+
+
+
+# GET http://localhost:8080/actuator/health
+
+
+
+# GET https://wiwfm4rya1.execute-api.us-east-1.amazonaws.com/actuator/health
+
+
+POST https://wiwfm4rya1.execute-api.us-east-1.amazonaws.com/api/start-scan
