@@ -1,14 +1,48 @@
-# POST http://localhost:8080/api/start-scan
+@apiUrl = https://4ext6aqewd.execute-api.us-east-1.amazonaws.com/prod
+
+### Health check
+GET {{apiUrl}}/actuator/health
 
 
+### Existing app endpoint
+POST {{apiUrl}}/api/start-scan
 
 
-
-# GET http://localhost:8080/actuator/health
-
-
-
-# GET https://wiwfm4rya1.execute-api.us-east-1.amazonaws.com/actuator/health
+### On-call lab 01
+GET {{apiUrl}}/api/lab/quote
 
 
-POST https://wiwfm4rya1.execute-api.us-east-1.amazonaws.com/api/start-scan
+### On-call lab 02
+GET {{apiUrl}}/api/lab/summary
+
+
+### On-call lab 03
+GET {{apiUrl}}/api/lab/inventory
+
+
+### On-call lab 04
+GET {{apiUrl}}/api/lab/session
+
+
+### On-call lab 05
+GET {{apiUrl}}/api/lab/cache
+
+
+### On-call lab 06
+GET {{apiUrl}}/api/lab/reconcile
+
+
+### On-call lab 07
+GET {{apiUrl}}/api/lab/profile
+
+
+### On-call lab 08
+GET {{apiUrl}}/api/lab/export
+
+
+### On-call lab 09
+GET {{apiUrl}}/api/lab/aggregate
+
+
+### On-call lab 10
+GET {{apiUrl}}/api/lab/feature
