@@ -1,7 +1,78 @@
 @apiUrl = https://4ext6aqewd.execute-api.us-east-1.amazonaws.com/prod
 
-### Health check
+### Consumer health check
 GET {{apiUrl}}/actuator/health
+
+
+### Auth token
+# @name token
+POST {{apiUrl}}/auth/token
+Content-Type: application/json
+
+{
+  "clientId": "demo-client",
+  "clientSecret": "demo-secret"
+}
+
+
+### Create normal async job
+# @name createJob
+POST {{apiUrl}}/api/jobs
+Authorization: Bearer {{token.response.body.accessToken}}
+Content-Type: application/json
+
+{
+  "jobType": "demo"
+}
+
+
+### Poll async job
+GET {{apiUrl}}/api/jobs/{{createJob.response.body.jobId}}
+Authorization: Bearer {{token.response.body.accessToken}}
+
+
+### Invalid token drill
+POST {{apiUrl}}/api/jobs
+Authorization: Bearer bad-token
+Content-Type: application/json
+
+{
+  "jobType": "invalid-token"
+}
+
+
+### Slow worker drill
+POST {{apiUrl}}/api/jobs
+Authorization: Bearer {{token.response.body.accessToken}}
+Content-Type: application/json
+
+{
+  "jobType": "slow",
+  "slow": true,
+  "durationMs": 10000
+}
+
+
+### Retry worker drill
+POST {{apiUrl}}/api/jobs
+Authorization: Bearer {{token.response.body.accessToken}}
+Content-Type: application/json
+
+{
+  "jobType": "retry",
+  "fail": true
+}
+
+
+### Poison message DLQ drill
+POST {{apiUrl}}/api/jobs
+Authorization: Bearer {{token.response.body.accessToken}}
+Content-Type: application/json
+
+{
+  "jobType": "poison",
+  "poison": true
+}
 
 
 ### Existing app endpoint

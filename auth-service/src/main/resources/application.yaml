@@ -3,14 +3,11 @@ server:
 
 spring:
   application:
-    name: consumer-service
+    name: auth-token-provider
 
 app:
-  auth:
-    base-url: ${AUTH_BASE_URL:http://localhost:8081}
-  jobs:
-    table-name: ${JOB_TABLE_NAME:prod-core-lab-state}
-    queue-url: ${JOB_QUEUE_URL:}
+  table-name: ${STATE_TABLE_NAME:prod-core-lab-state}
+  token-ttl-seconds: ${TOKEN_TTL_SECONDS:900}
 
 management:
   endpoints:

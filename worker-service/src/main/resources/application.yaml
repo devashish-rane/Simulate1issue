@@ -3,14 +3,12 @@ server:
 
 spring:
   application:
-    name: consumer-service
+    name: worker-service
 
 app:
-  auth:
-    base-url: ${AUTH_BASE_URL:http://localhost:8081}
-  jobs:
-    table-name: ${JOB_TABLE_NAME:prod-core-lab-state}
-    queue-url: ${JOB_QUEUE_URL:}
+  table-name: ${JOB_TABLE_NAME:prod-core-lab-state}
+  queue-url: ${JOB_QUEUE_URL:}
+  poll-delay-ms: ${WORKER_POLL_DELAY_MS:1000}
 
 management:
   endpoints:
