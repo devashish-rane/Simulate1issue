@@ -34,6 +34,7 @@ public class Rootcontroller {
 
     private final AtomicInteger summaryRequests = new AtomicInteger();
     private final AtomicInteger inventoryRequests = new AtomicInteger();
+    private final AtomicInteger checkoutRequests = new AtomicInteger();
 
     @PostMapping("/start-scan")
     ResponseEntity<String> startTask(){
@@ -70,6 +71,34 @@ public class Rootcontroller {
         return ResponseEntity.ok(Map.of(
                 "requestNumber", requestNumber,
                 "status", "ready"));
+    }
+
+    @GetMapping("/lab/checkout")
+    ResponseEntity<Map<String, Object>> checkout() {
+        int requestNumber = checkoutRequests.incrementAndGet();
+        if (requestNumber % 2 == 0) {
+            throw new IllegalStateException("checkout could not be completed");
+        }
+
+        return ResponseEntity.ok(Map.of(
+                "requestNumber", requestNumber,
+                "status", "accepted"));
+    }
+
+    @GetMapping("/lab/mismatch")
+    ResponseEntity<Map<String, Object>> mismatch() {
+        return ResponseEntity.ok(Map.of(
+                "status", "FAILED",
+                "message", "operation did not complete",
+                "reportedAt", Instant.now().toString()));
+    }
+
+    @GetMapping("/lab/timeout")
+    ResponseEntity<Map<String, Object>> timeout() throws InterruptedException {
+        Thread.sleep(35_000);
+        return ResponseEntity.ok(Map.of(
+                "status", "complete",
+                "finishedAt", Instant.now().toString()));
     }
 
     @GetMapping("/lab/inventory")

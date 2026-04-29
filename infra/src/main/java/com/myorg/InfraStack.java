@@ -17,6 +17,19 @@ import software.amazon.awscdk.services.apigateway.CfnRestApi;
 import software.amazon.awscdk.services.apigateway.CfnStage;
 import software.amazon.awscdk.services.apigatewayv2.VpcLink;
 import software.amazon.awscdk.services.applicationsignals.CfnDiscovery;
+import software.amazon.awscdk.services.cloudfront.AllowedMethods;
+import software.amazon.awscdk.services.cloudfront.BehaviorOptions;
+import software.amazon.awscdk.services.cloudfront.CachePolicy;
+import software.amazon.awscdk.services.cloudfront.CachedMethods;
+import software.amazon.awscdk.services.cloudfront.Distribution;
+import software.amazon.awscdk.services.cloudfront.ErrorResponse;
+import software.amazon.awscdk.services.cloudfront.OriginProtocolPolicy;
+import software.amazon.awscdk.services.cloudfront.OriginRequestPolicy;
+import software.amazon.awscdk.services.cloudfront.PriceClass;
+import software.amazon.awscdk.services.cloudfront.ResponseHeadersPolicy;
+import software.amazon.awscdk.services.cloudfront.ViewerProtocolPolicy;
+import software.amazon.awscdk.services.cloudfront.origins.HttpOrigin;
+import software.amazon.awscdk.services.cloudfront.origins.S3BucketOrigin;
 import software.amazon.awscdk.services.cloudwatch.Dashboard;
 import software.amazon.awscdk.services.cloudwatch.GraphWidget;
 import software.amazon.awscdk.services.cloudwatch.MathExpression;
@@ -31,6 +44,7 @@ import software.amazon.awscdk.services.dynamodb.Table;
 import software.amazon.awscdk.services.ec2.Port;
 import software.amazon.awscdk.services.ec2.SecurityGroup;
 import software.amazon.awscdk.services.ec2.SubnetSelection;
+import software.amazon.awscdk.services.ec2.SubnetConfiguration;
 import software.amazon.awscdk.services.ec2.SubnetType;
 import software.amazon.awscdk.services.ec2.Vpc;
 import software.amazon.awscdk.services.ecr.assets.Platform;
@@ -73,6 +87,11 @@ import software.amazon.awscdk.services.iam.Role;
 import software.amazon.awscdk.services.iam.ServicePrincipal;
 import software.amazon.awscdk.services.logs.LogGroup;
 import software.amazon.awscdk.services.logs.RetentionDays;
+import software.amazon.awscdk.services.s3.BlockPublicAccess;
+import software.amazon.awscdk.services.s3.Bucket;
+import software.amazon.awscdk.services.s3.BucketEncryption;
+import software.amazon.awscdk.services.s3.deployment.BucketDeployment;
+import software.amazon.awscdk.services.s3.deployment.Source;
 import software.amazon.awscdk.services.sqs.DeadLetterQueue;
 import software.amazon.awscdk.services.sqs.Queue;
 import software.constructs.Construct;
@@ -86,6 +105,7 @@ public class InfraStack extends Stack {
     private static final int APP_MEMORY_MIB = 1024;
     private static final int APP_DESIRED_TASKS = 1;
     private static final int HEALTH_CHECK_GRACE_SECONDS = 240;
+    private static final boolean LOW_COST_MODE = true;
 
     private static final String CLOUDWATCH_AGENT_IMAGE =
             "public.ecr.aws/cloudwatch-agent/cloudwatch-agent:latest";
@@ -100,15 +120,22 @@ public class InfraStack extends Stack {
     public InfraStack(final Construct scope, final String id, final StackProps props) {
         super(scope, id, props);
 
-        // Private app subnets keep ECS tasks off the public internet.
-        // The NAT gateway lets tasks pull container images and call AWS APIs.
-        Vpc vpc = Vpc.Builder.create(this, "Vpc")
+        // Low-cost mode removes the NAT gateway. Tasks get public IPs for outbound calls,
+        // while security groups still prevent direct inbound traffic to the containers.
+        Vpc.Builder vpcBuilder = Vpc.Builder.create(this, "Vpc")
                 .maxAzs(2)
-                .natGateways(1)
-                .build();
+                .natGateways(LOW_COST_MODE ? 0 : 1);
+        if (LOW_COST_MODE) {
+            vpcBuilder.subnetConfiguration(List.of(SubnetConfiguration.builder()
+                    .name("Public")
+                    .subnetType(SubnetType.PUBLIC)
+                    .cidrMask(18)
+                    .build()));
+        }
+        Vpc vpc = vpcBuilder.build();
 
-        SubnetSelection privateSubnets = SubnetSelection.builder()
-                .subnetType(SubnetType.PRIVATE_WITH_EGRESS)
+        SubnetSelection serviceSubnets = SubnetSelection.builder()
+                .subnetType(LOW_COST_MODE ? SubnetType.PUBLIC : SubnetType.PRIVATE_WITH_EGRESS)
                 .build();
 
         Cluster cluster = Cluster.Builder.create(this, "Cluster")
@@ -185,7 +212,7 @@ public class InfraStack extends Stack {
         ApplicationLoadBalancer loadBalancer = ApplicationLoadBalancer.Builder.create(this, "InternalAlb")
                 .vpc(vpc)
                 .internetFacing(false)
-                .vpcSubnets(privateSubnets)
+                .vpcSubnets(serviceSubnets)
                 .securityGroup(loadBalancerSecurityGroup)
                 .build();
 
@@ -249,11 +276,11 @@ public class InfraStack extends Stack {
         jobQueue.grantConsumeMessages(workerTaskDefinition.getTaskRole());
 
         FargateService authService = createService("AuthService", cluster, authTaskDefinition,
-                authSecurityGroup, privateSubnets, true);
+                authSecurityGroup, serviceSubnets, true);
         FargateService consumerService = createService("ConsumerService", cluster, consumerTaskDefinition,
-                consumerSecurityGroup, privateSubnets, true);
+                consumerSecurityGroup, serviceSubnets, true);
         FargateService workerService = createService("WorkerService", cluster, workerTaskDefinition,
-                workerSecurityGroup, privateSubnets, false);
+                workerSecurityGroup, serviceSubnets, false);
 
         ApplicationTargetGroup authTargetGroup = createTargetGroup(
                 "AuthTargetGroup",
@@ -288,7 +315,7 @@ public class InfraStack extends Stack {
 
         VpcLink vpcLink = VpcLink.Builder.create(this, "VpcLink")
                 .vpc(vpc)
-                .subnets(privateSubnets)
+                .subnets(serviceSubnets)
                 .securityGroups(List.of(vpcLinkSecurityGroup))
                 .build();
 
@@ -314,12 +341,6 @@ public class InfraStack extends Stack {
         String albDnsName = loadBalancer.getLoadBalancerDnsName();
         String albArn = loadBalancer.getLoadBalancerArn();
 
-        List<CfnMethod> restRootMethods = createRestRootMethods(
-                restApi,
-                albDnsName,
-                vpcLink.getVpcLinkId(),
-                albArn);
-
         CfnResource restProxyResource = CfnResource.Builder.create(this, "RestProxyResource")
                 .restApiId(restApi.getRef())
                 .parentId(restApi.getAttrRootResourceId())
@@ -333,11 +354,10 @@ public class InfraStack extends Stack {
                 vpcLink.getVpcLinkId(),
                 albArn);
 
-        CfnDeployment restDeployment = CfnDeployment.Builder.create(this, "RestApiDeploymentConcreteMethods")
+        CfnDeployment restDeployment = CfnDeployment.Builder.create(this, "RestApiDeploymentLowCostMode")
                 .restApiId(restApi.getRef())
-                .description("Deployment for REST API private ALB integration with concrete HTTP methods")
+                .description("Deployment for REST API private ALB integration in low-cost mode")
                 .build();
-        restRootMethods.forEach(method -> restDeployment.getNode().addDependency(method));
         restProxyMethods.forEach(method -> restDeployment.getNode().addDependency(method));
 
         CfnStage restProdStage = CfnStage.Builder.create(this, "RestApiProdStage")
@@ -359,6 +379,9 @@ public class InfraStack extends Stack {
                 .build();
         restProdStage.getNode().addDependency(apiGatewayAccount);
 
+        Distribution uiDistribution = createUiDistribution(restApi);
+        uiDistribution.getNode().addDependency(restProdStage);
+
         createDashboard(
                 authService,
                 consumerService,
@@ -372,6 +395,11 @@ public class InfraStack extends Stack {
         CfnOutput.Builder.create(this, "ApiUrl")
                 .description("Primary REST API Gateway URL")
                 .value(restApiUrl(restApi))
+                .build();
+
+        CfnOutput.Builder.create(this, "UiUrl")
+                .description("CloudFront URL for the learning console")
+                .value("https://" + uiDistribution.getDistributionDomainName())
                 .build();
 
         CfnOutput.Builder.create(this, "AlbDnsName")
@@ -505,7 +533,7 @@ public class InfraStack extends Stack {
             Cluster cluster,
             FargateTaskDefinition taskDefinition,
             SecurityGroup securityGroup,
-            SubnetSelection privateSubnets,
+            SubnetSelection serviceSubnets,
             boolean loadBalanced) {
 
         FargateServiceProps.Builder props = FargateServiceProps.builder()
@@ -514,8 +542,8 @@ public class InfraStack extends Stack {
                 .desiredCount(APP_DESIRED_TASKS)
                 .minHealthyPercent(100)
                 .maxHealthyPercent(200)
-                .assignPublicIp(false)
-                .vpcSubnets(privateSubnets)
+                .assignPublicIp(LOW_COST_MODE)
+                .vpcSubnets(serviceSubnets)
                 .securityGroups(List.of(securityGroup))
                 .circuitBreaker(DeploymentCircuitBreaker.builder()
                         .rollback(true)
@@ -767,6 +795,72 @@ public class InfraStack extends Stack {
                 .build();
     }
 
+    private Distribution createUiDistribution(CfnRestApi restApi) {
+        Bucket uiBucket = Bucket.Builder.create(this, "UiBucket")
+                .blockPublicAccess(BlockPublicAccess.BLOCK_ALL)
+                .encryption(BucketEncryption.S3_MANAGED)
+                .enforceSsl(true)
+                .autoDeleteObjects(true)
+                .removalPolicy(RemovalPolicy.DESTROY)
+                .build();
+
+        HttpOrigin apiOrigin = HttpOrigin.Builder.create(restApiDomainName(restApi))
+                .originPath("/" + REST_API_STAGE)
+                .protocolPolicy(OriginProtocolPolicy.HTTPS_ONLY)
+                .readTimeout(Duration.seconds(30))
+                .build();
+
+        BehaviorOptions apiBehavior = BehaviorOptions.builder()
+                .origin(apiOrigin)
+                .viewerProtocolPolicy(ViewerProtocolPolicy.REDIRECT_TO_HTTPS)
+                .allowedMethods(AllowedMethods.ALLOW_ALL)
+                .cachedMethods(CachedMethods.CACHE_GET_HEAD_OPTIONS)
+                .cachePolicy(CachePolicy.CACHING_DISABLED)
+                .originRequestPolicy(OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER)
+                .build();
+
+        Distribution distribution = Distribution.Builder.create(this, "UiDistribution")
+                .comment("prod-core learning console")
+                .defaultRootObject("index.html")
+                .priceClass(PriceClass.PRICE_CLASS_100)
+                .defaultBehavior(BehaviorOptions.builder()
+                        .origin(S3BucketOrigin.withOriginAccessControl(uiBucket))
+                        .viewerProtocolPolicy(ViewerProtocolPolicy.REDIRECT_TO_HTTPS)
+                        .cachePolicy(CachePolicy.CACHING_OPTIMIZED)
+                        .responseHeadersPolicy(ResponseHeadersPolicy.SECURITY_HEADERS)
+                        .build())
+                .additionalBehaviors(Map.of(
+                        "/api/*", apiBehavior,
+                        "/auth/*", apiBehavior,
+                        "/actuator/*", apiBehavior))
+                .errorResponses(List.of(
+                        ErrorResponse.builder()
+                                .httpStatus(403)
+                                .responseHttpStatus(200)
+                                .responsePagePath("/index.html")
+                                .ttl(Duration.seconds(0))
+                                .build(),
+                        ErrorResponse.builder()
+                                .httpStatus(404)
+                                .responseHttpStatus(200)
+                                .responsePagePath("/index.html")
+                                .ttl(Duration.seconds(0))
+                                .build()))
+                .build();
+
+        BucketDeployment.Builder.create(this, "UiDeployment")
+                .sources(List.of(Source.asset("../ui/dist")))
+                .destinationBucket(uiBucket)
+                .distribution(distribution)
+                .distributionPaths(List.of("/*"))
+                .prune(true)
+                .retainOnDelete(false)
+                .waitForDistributionInvalidation(false)
+                .build();
+
+        return distribution;
+    }
+
     private static Map<String, String> appTracingEnvironment(String serviceName, String serviceLogGroupName) {
         return Map.ofEntries(
                 Map.entry("JAVA_TOOL_OPTIONS", "-javaagent:/opt/aws-opentelemetry-agent.jar"),
@@ -803,10 +897,14 @@ public class InfraStack extends Stack {
     }
 
     private String restApiUrl(CfnRestApi restApi) {
-        return "https://" + restApi.getRef()
-                + ".execute-api." + getRegion()
-                + "." + getUrlSuffix()
+        return "https://" + restApiDomainName(restApi)
                 + "/" + REST_API_STAGE + "/";
+    }
+
+    private String restApiDomainName(CfnRestApi restApi) {
+        return restApi.getRef()
+                + ".execute-api." + getRegion()
+                + "." + getUrlSuffix();
     }
 
     private static Metric restApiMetric(String metricName, MetricOptions options) {
@@ -821,27 +919,6 @@ public class InfraStack extends Stack {
                 .period(options.getPeriod())
                 .unit(options.getUnit())
                 .build();
-    }
-
-    private List<CfnMethod> createRestRootMethods(
-            CfnRestApi restApi,
-            String albDnsName,
-            String vpcLinkId,
-            String loadBalancerArn) {
-
-        return restHttpMethods().stream()
-                .map(httpMethod -> CfnMethod.Builder.create(this, "RestRoot" + methodId(httpMethod) + "Method")
-                        .restApiId(restApi.getRef())
-                        .resourceId(restApi.getAttrRootResourceId())
-                        .httpMethod(httpMethod)
-                        .authorizationType("NONE")
-                        .integration(restPrivateIntegration(
-                                httpMethod,
-                                "http://" + albDnsName,
-                                vpcLinkId,
-                                loadBalancerArn))
-                        .build())
-                .toList();
     }
 
     private List<CfnMethod> createRestProxyMethods(
@@ -873,22 +950,6 @@ public class InfraStack extends Stack {
 
     private static String methodId(String httpMethod) {
         return httpMethod.charAt(0) + httpMethod.substring(1).toLowerCase();
-    }
-
-    private static CfnMethod.IntegrationProperty restPrivateIntegration(
-            String httpMethod,
-            String uri,
-            String vpcLinkId,
-            String loadBalancerArn) {
-        return CfnMethod.IntegrationProperty.builder()
-                .type("HTTP_PROXY")
-                .integrationHttpMethod(httpMethod)
-                .uri(uri)
-                .connectionType("VPC_LINK")
-                .connectionId(vpcLinkId)
-                .integrationTarget(loadBalancerArn)
-                .timeoutInMillis(29_000)
-                .build();
     }
 
     private static CfnMethod.IntegrationProperty restProxyPrivateIntegration(
