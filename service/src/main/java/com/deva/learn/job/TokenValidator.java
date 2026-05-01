@@ -5,6 +5,7 @@ import java.util.Map;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.slf4j.MDC;
 
 import com.deva.learn.config.AppProperties;
 import com.deva.learn.exception.DependencyUnavailableException;
@@ -18,6 +19,13 @@ class TokenValidator {
     TokenValidator(AppProperties properties, RestClient.Builder restClientBuilder) {
         this.authClient = restClientBuilder
                 .baseUrl(properties.auth().baseUrl())
+                .requestInterceptor((request, body, execution) -> {
+                    String requestId = MDC.get("requestId");
+                    if (requestId != null && !requestId.isBlank()) {
+                        request.getHeaders().set("X-Request-Id", requestId);
+                    }
+                    return execution.execute(request, body);
+                })
                 .build();
     }
 

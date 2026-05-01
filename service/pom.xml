@@ -29,6 +29,7 @@
 	<properties>
 		<java.version>17</java.version>
 		<aws.sdk.version>2.25.70</aws.sdk.version>
+		<opentelemetry.api.version>1.43.0</opentelemetry.api.version>
 	</properties>
 	<dependencyManagement>
 		<dependencies>
@@ -70,6 +71,12 @@
 		<dependency>
 			<groupId>software.amazon.awssdk</groupId>
 			<artifactId>sqs</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>io.opentelemetry</groupId>
+			<artifactId>opentelemetry-api</artifactId>
+			<version>${opentelemetry.api.version}</version>
 		</dependency>
 
 		<dependency>

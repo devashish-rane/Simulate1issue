@@ -10,6 +10,13 @@ app:
   queue-url: ${JOB_QUEUE_URL:}
   poll-delay-ms: ${WORKER_POLL_DELAY_MS:1000}
 
+observability:
+  slow-message-threshold-ms: ${SLOW_MESSAGE_THRESHOLD_MS:1000}
+
+logging:
+  pattern:
+    level: "%5p service=${spring.application.name} traceId=%X{traceId:-} spanId=%X{spanId:-} requestId=%X{requestId:-} xrayTraceId=%X{xrayTraceId:-} jobId=%X{jobId:-} messageId=%X{messageId:-} producerTraceId=%X{producerTraceId:-} producerSpanId=%X{producerSpanId:-}"
+
 management:
   endpoints:
     web:

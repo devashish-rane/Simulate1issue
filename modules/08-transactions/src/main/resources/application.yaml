@@ -1,0 +1,12 @@
+server:
+  port: 8098
+spring:
+  application:
+    name: transactions-lab
+  datasource:
+    url: jdbc:h2:mem:transactions;DB_CLOSE_DELAY=-1
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    open-in-view: false
+

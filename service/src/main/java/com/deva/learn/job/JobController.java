@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.slf4j.MDC;
 
 @RestController
 @RequestMapping("/api/jobs")
@@ -38,6 +39,7 @@ public class JobController {
                 : request;
 
         String jobId = UUID.randomUUID().toString();
+        MDC.put("jobId", jobId);
         String now = Instant.now().toString();
         JobMessage message = new JobMessage(
                 jobId,

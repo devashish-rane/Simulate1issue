@@ -1,0 +1,9 @@
+server:
+  port: 8108
+spring:
+  application:
+    name: structured-logging-lab
+logging:
+  pattern:
+    level: "%5p traceId=%X{traceId:-} spanId=%X{spanId:-} tenantId=%X{tenantId:-} userId=%X{userId:-}"
+

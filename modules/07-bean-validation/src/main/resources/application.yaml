@@ -1,0 +1,6 @@
+server:
+  port: 8097
+spring:
+  application:
+    name: bean-validation-lab
+

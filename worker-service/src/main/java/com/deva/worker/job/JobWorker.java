@@ -6,10 +6,13 @@ import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import com.deva.worker.config.AppProperties;
+import com.deva.worker.observability.TraceContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -30,12 +33,19 @@ class JobWorker {
     private final DynamoDbClient dynamoDbClient;
     private final ObjectMapper objectMapper;
     private final AppProperties properties;
+    private final long slowMessageThresholdMs;
 
-    JobWorker(SqsClient sqsClient, DynamoDbClient dynamoDbClient, ObjectMapper objectMapper, AppProperties properties) {
+    JobWorker(
+            SqsClient sqsClient,
+            DynamoDbClient dynamoDbClient,
+            ObjectMapper objectMapper,
+            AppProperties properties,
+            @Value("${observability.slow-message-threshold-ms:1000}") long slowMessageThresholdMs) {
         this.sqsClient = sqsClient;
         this.dynamoDbClient = dynamoDbClient;
         this.objectMapper = objectMapper;
         this.properties = properties;
+        this.slowMessageThresholdMs = slowMessageThresholdMs;
     }
 
     @Scheduled(fixedDelayString = "${app.poll-delay-ms:1000}")
@@ -49,6 +59,7 @@ class JobWorker {
                 .maxNumberOfMessages(5)
                 .waitTimeSeconds(10)
                 .visibilityTimeout(30)
+                .messageAttributeNames("All")
                 .messageSystemAttributeNames(MessageSystemAttributeName.APPROXIMATE_RECEIVE_COUNT)
                 .build()).messages();
 
@@ -58,10 +69,17 @@ class JobWorker {
     }
 
     private void process(Message sqsMessage) {
+        long startedAtNanos = System.nanoTime();
         JobMessage job;
         int attempt = attempt(sqsMessage);
         try {
+            MDC.put("messageId", sqsMessage.messageId());
+            MDC.put("attempt", Integer.toString(attempt));
+            TraceContext.putCurrentSpan();
+            TraceContext.putMessageAttributes(sqsMessage);
+
             job = objectMapper.readValue(sqsMessage.body(), JobMessage.class);
+            MDC.put("jobId", job.jobId());
             update(job.jobId(), "PROCESSING", attempt, null);
 
             if (job.slow()) {
@@ -79,18 +97,26 @@ class JobWorker {
                     .queueUrl(properties.queueUrl())
                     .receiptHandle(sqsMessage.receiptHandle())
                     .build());
-            log.info("job succeeded jobId={} attempt={}", job.jobId(), attempt);
+            long durationMs = elapsedMs(startedAtNanos);
+            MDC.put("durationMs", Long.toString(durationMs));
+            if (durationMs >= slowMessageThresholdMs) {
+                log.warn("slow job completed jobId={} attempt={} durationMs={} thresholdMs={}",
+                        job.jobId(), attempt, durationMs, slowMessageThresholdMs);
+            }
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("worker interrupted", exception);
         } catch (Exception exception) {
             handleFailure(sqsMessage, attempt, exception);
+        } finally {
+            MDC.clear();
         }
     }
 
     private void handleFailure(Message sqsMessage, int attempt, Exception exception) {
         try {
             JobMessage job = objectMapper.readValue(sqsMessage.body(), JobMessage.class);
+            MDC.put("jobId", job.jobId());
             String status = attempt >= 3 ? "FAILED" : "RETRYING";
             update(job.jobId(), status, attempt, exception.getMessage());
             log.warn("job failed jobId={} status={} attempt={} error={}",
@@ -133,6 +159,10 @@ class JobWorker {
             return 1;
         }
         return Integer.parseInt(value);
+    }
+
+    private static long elapsedMs(long startedAtNanos) {
+        return (System.nanoTime() - startedAtNanos) / 1_000_000L;
     }
 
     private static AttributeValue stringValue(String value) {

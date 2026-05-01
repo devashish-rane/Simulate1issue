@@ -1,0 +1,14 @@
+server:
+  port: 8093
+spring:
+  application:
+    name: tenant-context-lab
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+logging:
+  pattern:
+    level: "%5p tenantId=%X{tenantId:-} userId=%X{userId:-}"
+

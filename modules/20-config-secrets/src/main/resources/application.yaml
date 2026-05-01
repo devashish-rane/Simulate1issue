@@ -1,0 +1,10 @@
+server:
+  port: 8110
+spring:
+  application:
+    name: config-secrets-lab
+lab:
+  required-region: us-east-1
+  secret-token: local-dev-secret
+  optional-feature-enabled: false
+
